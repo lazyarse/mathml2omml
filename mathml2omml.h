@@ -2,8 +2,8 @@
 
 #include <string>
 
-struct OmmlSink {
-    virtual ~OmmlSink() = default;
+struct XmlSink {
+    virtual ~XmlSink() = default;
     virtual void startElement(const std::string &qualifiedName) = 0;
     virtual void endElement() = 0;
     virtual void attribute(const std::string &qualifiedName,
@@ -12,6 +12,11 @@ struct OmmlSink {
 };
 
 struct MathmlToOmml {
-    static bool convert(const std::string &mathmlXml, OmmlSink &sink);
+    static bool convert(const std::string &mathmlXml, XmlSink &sink);
     static std::string convert(const std::string &mathmlXml);
+};
+
+struct OmmlToMathml {
+    static bool convert(const std::string &ommlXml, XmlSink &sink);
+    static std::string convert(const std::string &ommlXml);
 };
