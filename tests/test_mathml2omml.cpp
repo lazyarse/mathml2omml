@@ -480,3 +480,119 @@ TEST(Omml2MathmlTest, BoldStyle)
     EXPECT_TRUE(mml.find("mathvariant=\"bold\"") != std::string::npos)
         << "Bold style must produce mathvariant=\"bold\"";
 }
+
+// ── New forward mappings (MathML → OMML) ─────────────────────────────────
+
+TEST(Mathml2OmmlTest, Phantom)
+{
+    std::string mml =
+        "<math><semantics>"
+        "<mrow><mphantom><mi>x</mi></mphantom></mrow>"
+        "</semantics></math>";
+
+    std::string omml = MathmlToOmml::convert(mml);
+
+    EXPECT_TRUE(omml.find("<m:phant>") != std::string::npos) << "mphantom must produce m:phant";
+    EXPECT_TRUE(omml.find(">x<") != std::string::npos) << "Content must be preserved";
+}
+
+TEST(Mathml2OmmlTest, Prescript)
+{
+    std::string mml =
+        "<math><semantics>"
+        "<mrow><mmultiscripts><mi>X</mi><mprescripts/>"
+        "<mn>1</mn><mn>2</mn></mmultiscripts></mrow>"
+        "</semantics></math>";
+
+    std::string omml = MathmlToOmml::convert(mml);
+
+    EXPECT_TRUE(omml.find("<m:sPre>") != std::string::npos) << "mmultiscripts must produce m:sPre";
+    EXPECT_TRUE(omml.find(">X<") != std::string::npos) << "Base 'X' must be present";
+    EXPECT_TRUE(omml.find(">1<") != std::string::npos) << "Prescript '1' must be present";
+    EXPECT_TRUE(omml.find(">2<") != std::string::npos) << "Presuperscript '2' must be present";
+}
+
+TEST(Mathml2OmmlTest, Linebreak)
+{
+    std::string mml =
+        "<math><semantics>"
+        "<mrow><mi>x</mi><mspace linebreak=\"newline\"/><mi>y</mi></mrow>"
+        "</semantics></math>";
+
+    std::string omml = MathmlToOmml::convert(mml);
+
+    EXPECT_TRUE(omml.find("<m:br/>") != std::string::npos) << "mspace with linebreak must produce m:br";
+    EXPECT_TRUE(omml.find(">x<") != std::string::npos) << "x must be present";
+    EXPECT_TRUE(omml.find(">y<") != std::string::npos) << "y must be present";
+}
+
+TEST(Mathml2OmmlTest, MspaceDropped)
+{
+    std::string mml =
+        "<math><semantics>"
+        "<mrow><mi>a</mi><mspace width=\"3pt\"/><mi>b</mi></mrow>"
+        "</semantics></math>";
+
+    std::string omml = MathmlToOmml::convert(mml);
+
+    EXPECT_TRUE(omml.find("<m:br/>") == std::string::npos) << "Plain mspace must not produce m:br";
+    EXPECT_TRUE(omml.find(">a<") != std::string::npos) << "a must be present";
+    EXPECT_TRUE(omml.find(">b<") != std::string::npos) << "b must be present";
+    // Just check the mspace is silently removed — a and b should be adjacent
+    size_t posA = omml.find(">a<");
+    size_t posB = omml.find(">b<");
+    EXPECT_LT(posA, posB) << "a must come before b (mspace dropped)";
+}
+
+TEST(Mathml2OmmlTest, MstyleMathvariant)
+{
+    std::string mml =
+        "<math><semantics>"
+        "<mstyle mathvariant=\"bold\"><mi>x</mi></mstyle>"
+        "</semantics></math>";
+
+    std::string omml = MathmlToOmml::convert(mml);
+
+    EXPECT_TRUE(omml.find("<m:sty m:val=\"b\"/>") != std::string::npos)
+        << "mstyle mathvariant=bold must propagate m:sty val=b onto child";
+    EXPECT_TRUE(omml.find(">x<") != std::string::npos) << "Child content must be preserved";
+}
+
+TEST(Mathml2OmmlTest, MpaddedToBox)
+{
+    std::string mml =
+        "<math><semantics>"
+        "<mpadded width=\"0\"><mi>x</mi></mpadded>"
+        "</semantics></math>";
+
+    std::string omml = MathmlToOmml::convert(mml);
+
+    EXPECT_TRUE(omml.find("<m:box>") != std::string::npos) << "mpadded must produce m:box";
+    EXPECT_TRUE(omml.find(">x<") != std::string::npos) << "Child content must be preserved";
+}
+
+TEST(Mathml2OmmlTest, MerrorToBox)
+{
+    std::string mml =
+        "<math><semantics>"
+        "<merror><mi>x</mi></merror>"
+        "</semantics></math>";
+
+    std::string omml = MathmlToOmml::convert(mml);
+
+    EXPECT_TRUE(omml.find("<m:box>") != std::string::npos) << "merror must produce m:box";
+    EXPECT_TRUE(omml.find(">x<") != std::string::npos) << "Child content must be preserved";
+}
+
+TEST(Mathml2OmmlTest, MencloseToBorderBox)
+{
+    std::string mml =
+        "<math><semantics>"
+        "<menclose notation=\"box\"><mi>x</mi></menclose>"
+        "</semantics></math>";
+
+    std::string omml = MathmlToOmml::convert(mml);
+
+    EXPECT_TRUE(omml.find("<m:borderBox>") != std::string::npos) << "menclose must produce m:borderBox";
+    EXPECT_TRUE(omml.find(">x<") != std::string::npos) << "Child content must be preserved";
+}

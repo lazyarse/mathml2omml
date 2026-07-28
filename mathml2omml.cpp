@@ -5,7 +5,7 @@
 #include <cstdlib>
 #include <algorithm>
 
-// ── Simple XML reader (MathML subset) ─────────────────────────────────────────
+// ── Simple XML reader ─────────────────────────────────────────────────────────
 
 class XmlReader {
     const std::string &s;
@@ -188,11 +188,22 @@ static std::string mathvariantToStyle(const std::string &variant) {
 
 using MmlNode = XmlReader::MmlNode;
 
-static void emitTextRun(const MmlNode &node, XmlSink &sink) {
+struct StyleContext {
+    std::string mathvariant;
+};
+
+static void emitOmml(const MmlNode &node, XmlSink &sink,
+                      StyleContext ctx = {});
+
+static void emitTextRun(const MmlNode &node, XmlSink &sink,
+                        const StyleContext &ctx) {
     std::string style = defaultStyleForTag(node.tag);
     auto it = node.attrs.find("mathvariant");
     if (it != node.attrs.end()) {
         std::string s = mathvariantToStyle(it->second);
+        if (!s.empty()) style = s;
+    } else if (!ctx.mathvariant.empty()) {
+        std::string s = mathvariantToStyle(ctx.mathvariant);
         if (!s.empty()) style = s;
     }
 
@@ -211,31 +222,68 @@ static void emitTextRun(const MmlNode &node, XmlSink &sink) {
     sink.endElement(); // m:r
 }
 
-static void emitOmml(const MmlNode &node, XmlSink &sink) {
+static void emitOmml(const MmlNode &node, XmlSink &sink,
+                      StyleContext ctx) {
     const std::string &t = node.tag;
 
     if (t == "math" || t == "semantics") {
-        for (const auto &c : node.children) emitOmml(c, sink);
+        for (const auto &c : node.children) emitOmml(c, sink, ctx);
         return;
     }
     if (t == "annotation" || t == "annotation-xml") return;
 
     if (t == "mi" || t == "mn" || t == "mo" || t == "mtext" || t == "ms")
-        return emitTextRun(node, sink);
-    if (t == "mspace") return;
+        return emitTextRun(node, sink, ctx);
+    if (t == "mspace") {
+        // Drop ordinary spaces, but emit m:br for line breaks
+        auto it = node.attrs.find("linebreak");
+        if (it != node.attrs.end() && it->second == "newline") {
+            sink.startElement("m:br");
+            sink.endElement();
+        }
+        return;
+    }
+    if (t == "mphantom") {
+        sink.startElement("m:phant");
+        for (const auto &c : node.children) emitOmml(c, sink, ctx);
+        sink.endElement();
+        return;
+    }
+    if (t == "mmultiscripts") {
+        size_t mp = node.children.size();
+        for (size_t i = 0; i < node.children.size(); ++i)
+            if (node.children[i].tag == "mprescripts") { mp = i; break; }
+
+        if (mp < node.children.size()) {
+            sink.startElement("m:sPre");
+            sink.startElement("m:e");
+            if (node.children.size() >= 1) emitOmml(node.children[0], sink, ctx);
+            sink.endElement();
+            sink.startElement("m:sub");
+            if (mp + 1 < node.children.size()) emitOmml(node.children[mp + 1], sink, ctx);
+            sink.endElement();
+            sink.startElement("m:sup");
+            if (mp + 2 < node.children.size()) emitOmml(node.children[mp + 2], sink, ctx);
+            sink.endElement();
+            sink.endElement();
+        } else {
+            for (const auto &c : node.children) emitOmml(c, sink, ctx);
+        }
+        return;
+    }
 
     if (t == "mrow") {
-        for (const auto &c : node.children) emitOmml(c, sink);
+        for (const auto &c : node.children) emitOmml(c, sink, ctx);
         return;
     }
 
     if (t == "msup") {
         sink.startElement("m:sSup");
         sink.startElement("m:e");
-        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink, ctx);
         sink.endElement();
         sink.startElement("m:sup");
-        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink, ctx);
         sink.endElement();
         sink.endElement();
         return;
@@ -244,10 +292,10 @@ static void emitOmml(const MmlNode &node, XmlSink &sink) {
     if (t == "msub") {
         sink.startElement("m:sSub");
         sink.startElement("m:e");
-        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink, ctx);
         sink.endElement();
         sink.startElement("m:sub");
-        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink, ctx);
         sink.endElement();
         sink.endElement();
         return;
@@ -256,13 +304,13 @@ static void emitOmml(const MmlNode &node, XmlSink &sink) {
     if (t == "msubsup") {
         sink.startElement("m:sSubSup");
         sink.startElement("m:e");
-        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink, ctx);
         sink.endElement();
         sink.startElement("m:sub");
-        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink, ctx);
         sink.endElement();
         sink.startElement("m:sup");
-        if (node.children.size() >= 3) emitOmml(node.children[2], sink);
+        if (node.children.size() >= 3) emitOmml(node.children[2], sink, ctx);
         sink.endElement();
         sink.endElement();
         return;
@@ -271,10 +319,10 @@ static void emitOmml(const MmlNode &node, XmlSink &sink) {
     if (t == "mfrac") {
         sink.startElement("m:f");
         sink.startElement("m:num");
-        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink, ctx);
         sink.endElement();
         sink.startElement("m:den");
-        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink, ctx);
         sink.endElement();
         sink.endElement();
         return;
@@ -285,7 +333,7 @@ static void emitOmml(const MmlNode &node, XmlSink &sink) {
         sink.startElement("m:deg");
         sink.endElement();
         sink.startElement("m:e");
-        for (const auto &c : node.children) emitOmml(c, sink);
+        for (const auto &c : node.children) emitOmml(c, sink, ctx);
         sink.endElement();
         sink.endElement();
         return;
@@ -294,10 +342,10 @@ static void emitOmml(const MmlNode &node, XmlSink &sink) {
     if (t == "mroot") {
         sink.startElement("m:rad");
         sink.startElement("m:deg");
-        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink, ctx);
         sink.endElement();
         sink.startElement("m:e");
-        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink, ctx);
         sink.endElement();
         sink.endElement();
         return;
@@ -306,10 +354,10 @@ static void emitOmml(const MmlNode &node, XmlSink &sink) {
     if (t == "mover") {
         sink.startElement("m:limUpp");
         sink.startElement("m:e");
-        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink, ctx);
         sink.endElement();
         sink.startElement("m:lim");
-        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink, ctx);
         sink.endElement();
         sink.endElement();
         return;
@@ -318,10 +366,10 @@ static void emitOmml(const MmlNode &node, XmlSink &sink) {
     if (t == "munder") {
         sink.startElement("m:limLow");
         sink.startElement("m:e");
-        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink, ctx);
         sink.endElement();
         sink.startElement("m:lim");
-        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink, ctx);
         sink.endElement();
         sink.endElement();
         return;
@@ -332,15 +380,15 @@ static void emitOmml(const MmlNode &node, XmlSink &sink) {
         sink.startElement("m:e");
         sink.startElement("m:limUpp");
         sink.startElement("m:e");
-        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink, ctx);
         sink.endElement();
         sink.startElement("m:lim");
-        if (node.children.size() >= 3) emitOmml(node.children[2], sink);
+        if (node.children.size() >= 3) emitOmml(node.children[2], sink, ctx);
         sink.endElement();
         sink.endElement();
         sink.endElement();
         sink.startElement("m:lim");
-        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink, ctx);
         sink.endElement();
         sink.endElement();
         return;
@@ -348,32 +396,49 @@ static void emitOmml(const MmlNode &node, XmlSink &sink) {
 
     if (t == "mtable") {
         sink.startElement("m:m");
-        for (const auto &c : node.children) emitOmml(c, sink);
+        for (const auto &c : node.children) emitOmml(c, sink, ctx);
         sink.endElement();
         return;
     }
 
     if (t == "mtr") {
         sink.startElement("m:mr");
-        for (const auto &c : node.children) emitOmml(c, sink);
+        for (const auto &c : node.children) emitOmml(c, sink, ctx);
         sink.endElement();
         return;
     }
 
     if (t == "mtd") {
         sink.startElement("m:mc");
-        for (const auto &c : node.children) emitOmml(c, sink);
+        for (const auto &c : node.children) emitOmml(c, sink, ctx);
         sink.endElement();
         return;
     }
 
-    if (t == "mstyle" || t == "mpadded" || t == "merror" || t == "menclose") {
-        for (const auto &c : node.children) emitOmml(c, sink);
+    if (t == "mstyle") {
+        StyleContext childCtx = ctx;
+        auto mvIt = node.attrs.find("mathvariant");
+        if (mvIt != node.attrs.end()) childCtx.mathvariant = mvIt->second;
+        for (const auto &c : node.children) emitOmml(c, sink, childCtx);
+        return;
+    }
+
+    if (t == "mpadded" || t == "merror") {
+        sink.startElement("m:box");
+        for (const auto &c : node.children) emitOmml(c, sink, ctx);
+        sink.endElement();
+        return;
+    }
+
+    if (t == "menclose") {
+        sink.startElement("m:borderBox");
+        for (const auto &c : node.children) emitOmml(c, sink, ctx);
+        sink.endElement();
         return;
     }
 
     // Unknown — process children
-    for (const auto &c : node.children) emitOmml(c, sink);
+    for (const auto &c : node.children) emitOmml(c, sink, ctx);
 }
 
 // ── OMML → MathML helpers ──────────────────────────────────────────────────
