@@ -116,7 +116,7 @@ TEST(Mathml2OmmlTest, ItalicStyle)
 
     std::string omml = MathmlToOmml::convert(mml);
 
-    EXPECT_TRUE(omml.find("<m:sty>i</m:sty>") != std::string::npos) << "mi must use italic style";
+    EXPECT_TRUE(omml.find("<m:sty m:val=\"i\"/>") != std::string::npos) << "mi must use italic style";
 }
 
 TEST(Mathml2OmmlTest, OverAndUnderLimits)

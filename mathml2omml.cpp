@@ -87,7 +87,6 @@ public:
         std::vector<MmlNode> children;
     };
 
-    // Move to the first start element, skipping XML declaration / comments / whitespace
     bool seekToFirstElement() {
         while (p < s.size()) {
             skipWs();
@@ -168,35 +167,6 @@ public:
     }
 };
 
-// ── OMML output builder ──────────────────────────────────────────────────────
-
-static std::string escXml(const std::string &s) {
-    std::string r;
-    r.reserve(s.size());
-    for (char c : s) {
-        switch (c) {
-            case '&': r += "&amp;"; break;
-            case '<': r += "&lt;"; break;
-            case '>': r += "&gt;"; break;
-            default: r += c;
-        }
-    }
-    return r;
-}
-
-static std::string tag(const std::string &name, const std::string &content) {
-    return "<" + name + ">" + content + "</" + name + ">";
-}
-
-static std::string tagA(const std::string &name, const std::string &attr,
-                         const std::string &val, const std::string &content) {
-    return "<" + name + " " + attr + "=\"" + val + "\">" + content + "</" + name + ">";
-}
-
-static std::string emptyTag(const std::string &name) {
-    return "<" + name + "/>";
-}
-
 // ── Style helpers ─────────────────────────────────────────────────────────────
 
 static std::string defaultStyleForTag(const std::string &tag) {
@@ -214,11 +184,11 @@ static std::string mathvariantToStyle(const std::string &variant) {
     return {};
 }
 
-// ── Recursive OMML emitter ────────────────────────────────────────────────────
+// ── Recursive OMML emitter (sink-based) ──────────────────────────────────────
 
 using MmlNode = XmlReader::MmlNode;
 
-static std::string emitTextRun(const MmlNode &node) {
+static void emitTextRun(const MmlNode &node, OmmlSink &sink) {
     std::string style = defaultStyleForTag(node.tag);
     auto it = node.attrs.find("mathvariant");
     if (it != node.attrs.end()) {
@@ -226,134 +196,275 @@ static std::string emitTextRun(const MmlNode &node) {
         if (!s.empty()) style = s;
     }
 
-    std::string rpr;
-    if (style != "p")
-        rpr = tag("m:rPr", tag("m:sty", style));
-
-    std::string t = tagA("m:t", "xml:space", "preserve", escXml(node.text));
-    return tag("m:r", rpr + t);
+    sink.startElement("m:r");
+    if (style != "p") {
+        sink.startElement("m:rPr");
+        sink.startElement("m:sty");
+        sink.attribute("m:val", style);
+        sink.endElement(); // m:sty
+        sink.endElement(); // m:rPr
+    }
+    sink.startElement("m:t");
+    sink.attribute("xml:space", "preserve");
+    sink.characters(node.text);
+    sink.endElement(); // m:t
+    sink.endElement(); // m:r
 }
 
-static std::string emitOmml(const MmlNode &node) {
+static void emitOmml(const MmlNode &node, OmmlSink &sink) {
     const std::string &t = node.tag;
 
     if (t == "math" || t == "semantics") {
-        std::string r;
-        for (const auto &c : node.children) r += emitOmml(c);
-        return r;
+        for (const auto &c : node.children) emitOmml(c, sink);
+        return;
     }
-    if (t == "annotation" || t == "annotation-xml") return {};
+    if (t == "annotation" || t == "annotation-xml") return;
 
     if (t == "mi" || t == "mn" || t == "mo" || t == "mtext" || t == "ms")
-        return emitTextRun(node);
-    if (t == "mspace") return {};
+        return emitTextRun(node, sink);
+    if (t == "mspace") return;
 
     if (t == "mrow") {
-        std::string r;
-        for (const auto &c : node.children) r += emitOmml(c);
-        return r;
+        for (const auto &c : node.children) emitOmml(c, sink);
+        return;
     }
 
     if (t == "msup") {
-        std::string base = node.children.size() >= 1 ? emitOmml(node.children[0]) : std::string{};
-        std::string sup = node.children.size() >= 2 ? emitOmml(node.children[1]) : std::string{};
-        return tag("m:sSup", tag("m:e", base) + tag("m:sup", sup));
+        sink.startElement("m:sSup");
+        sink.startElement("m:e");
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        sink.endElement();
+        sink.startElement("m:sup");
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        sink.endElement();
+        sink.endElement();
+        return;
     }
 
     if (t == "msub") {
-        std::string base = node.children.size() >= 1 ? emitOmml(node.children[0]) : std::string{};
-        std::string sub = node.children.size() >= 2 ? emitOmml(node.children[1]) : std::string{};
-        return tag("m:sSub", tag("m:e", base) + tag("m:sub", sub));
+        sink.startElement("m:sSub");
+        sink.startElement("m:e");
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        sink.endElement();
+        sink.startElement("m:sub");
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        sink.endElement();
+        sink.endElement();
+        return;
     }
 
     if (t == "msubsup") {
-        std::string base = node.children.size() >= 1 ? emitOmml(node.children[0]) : std::string{};
-        std::string sub = node.children.size() >= 2 ? emitOmml(node.children[1]) : std::string{};
-        std::string sup = node.children.size() >= 3 ? emitOmml(node.children[2]) : std::string{};
-        return tag("m:sSubSup", tag("m:e", base) + tag("m:sub", sub) + tag("m:sup", sup));
+        sink.startElement("m:sSubSup");
+        sink.startElement("m:e");
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        sink.endElement();
+        sink.startElement("m:sub");
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        sink.endElement();
+        sink.startElement("m:sup");
+        if (node.children.size() >= 3) emitOmml(node.children[2], sink);
+        sink.endElement();
+        sink.endElement();
+        return;
     }
 
     if (t == "mfrac") {
-        std::string num = node.children.size() >= 1 ? emitOmml(node.children[0]) : std::string{};
-        std::string den = node.children.size() >= 2 ? emitOmml(node.children[1]) : std::string{};
-        return tag("m:f", tag("m:num", num) + tag("m:den", den));
+        sink.startElement("m:f");
+        sink.startElement("m:num");
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        sink.endElement();
+        sink.startElement("m:den");
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        sink.endElement();
+        sink.endElement();
+        return;
     }
 
     if (t == "msqrt") {
-        std::string content;
-        for (const auto &c : node.children) content += emitOmml(c);
-        return tag("m:rad", emptyTag("m:deg") + tag("m:e", content));
+        sink.startElement("m:rad");
+        sink.startElement("m:deg");
+        sink.endElement();
+        sink.startElement("m:e");
+        for (const auto &c : node.children) emitOmml(c, sink);
+        sink.endElement();
+        sink.endElement();
+        return;
     }
 
     if (t == "mroot") {
-        // MathML children: [radicand, degree]; OMML: deg first, then e
-        std::string deg = node.children.size() >= 2 ? emitOmml(node.children[1]) : std::string{};
-        std::string base = node.children.size() >= 1 ? emitOmml(node.children[0]) : std::string{};
-        return tag("m:rad", tag("m:deg", deg) + tag("m:e", base));
+        sink.startElement("m:rad");
+        sink.startElement("m:deg");
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        sink.endElement();
+        sink.startElement("m:e");
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        sink.endElement();
+        sink.endElement();
+        return;
     }
 
     if (t == "mover") {
-        std::string base = node.children.size() >= 1 ? emitOmml(node.children[0]) : std::string{};
-        std::string over = node.children.size() >= 2 ? emitOmml(node.children[1]) : std::string{};
-        return tag("m:limUpp", tag("m:e", base) + tag("m:lim", over));
+        sink.startElement("m:limUpp");
+        sink.startElement("m:e");
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        sink.endElement();
+        sink.startElement("m:lim");
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        sink.endElement();
+        sink.endElement();
+        return;
     }
 
     if (t == "munder") {
-        std::string base = node.children.size() >= 1 ? emitOmml(node.children[0]) : std::string{};
-        std::string under = node.children.size() >= 2 ? emitOmml(node.children[1]) : std::string{};
-        return tag("m:limLow", tag("m:e", base) + tag("m:lim", under));
+        sink.startElement("m:limLow");
+        sink.startElement("m:e");
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        sink.endElement();
+        sink.startElement("m:lim");
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        sink.endElement();
+        sink.endElement();
+        return;
     }
 
     if (t == "munderover") {
-        std::string base = node.children.size() >= 1 ? emitOmml(node.children[0]) : std::string{};
-        std::string under = node.children.size() >= 2 ? emitOmml(node.children[1]) : std::string{};
-        std::string over = node.children.size() >= 3 ? emitOmml(node.children[2]) : std::string{};
-        return tag("m:limLow",
-                   tag("m:e", tag("m:limUpp", tag("m:e", base) + tag("m:lim", over)))
-                   + tag("m:lim", under));
+        sink.startElement("m:limLow");
+        sink.startElement("m:e");
+        sink.startElement("m:limUpp");
+        sink.startElement("m:e");
+        if (node.children.size() >= 1) emitOmml(node.children[0], sink);
+        sink.endElement();
+        sink.startElement("m:lim");
+        if (node.children.size() >= 3) emitOmml(node.children[2], sink);
+        sink.endElement();
+        sink.endElement();
+        sink.endElement();
+        sink.startElement("m:lim");
+        if (node.children.size() >= 2) emitOmml(node.children[1], sink);
+        sink.endElement();
+        sink.endElement();
+        return;
     }
 
     if (t == "mtable") {
-        std::string r;
-        for (const auto &c : node.children) r += emitOmml(c);
-        return tag("m:m", r);
+        sink.startElement("m:m");
+        for (const auto &c : node.children) emitOmml(c, sink);
+        sink.endElement();
+        return;
     }
 
     if (t == "mtr") {
-        std::string r;
-        for (const auto &c : node.children) r += emitOmml(c);
-        return tag("m:mr", r);
+        sink.startElement("m:mr");
+        for (const auto &c : node.children) emitOmml(c, sink);
+        sink.endElement();
+        return;
     }
 
     if (t == "mtd") {
-        std::string r;
-        for (const auto &c : node.children) r += emitOmml(c);
-        return tag("m:mc", r);
+        sink.startElement("m:mc");
+        for (const auto &c : node.children) emitOmml(c, sink);
+        sink.endElement();
+        return;
     }
 
     if (t == "mstyle" || t == "mpadded" || t == "merror" || t == "menclose") {
-        std::string r;
-        for (const auto &c : node.children) r += emitOmml(c);
-        return r;
+        for (const auto &c : node.children) emitOmml(c, sink);
+        return;
     }
 
     // Unknown — process children
-    std::string r;
-    for (const auto &c : node.children) r += emitOmml(c);
-    return r;
+    for (const auto &c : node.children) emitOmml(c, sink);
 }
+
+// ── String-building sink (keeps string overload working) ──────────────────────
+
+class StringSink : public OmmlSink {
+    std::string out_;
+    bool pendingAttr_ = false;
+    std::vector<std::string> stack_;
+
+    static std::string escXml(const std::string &s) {
+        std::string r;
+        r.reserve(s.size());
+        for (char c : s) {
+            switch (c) {
+                case '&': r += "&amp;"; break;
+                case '<': r += "&lt;"; break;
+                case '>': r += "&gt;"; break;
+                default: r += c;
+            }
+        }
+        return r;
+    }
+
+public:
+    void startElement(const std::string &name) override {
+        if (pendingAttr_) {
+            out_ += '>';
+            pendingAttr_ = false;
+        }
+        out_ += '<';
+        out_ += name;
+        pendingAttr_ = true;
+        stack_.push_back(name);
+    }
+
+    void endElement() override {
+        if (pendingAttr_) {
+            out_ += '/';
+            out_ += '>';
+            pendingAttr_ = false;
+            stack_.pop_back();
+            return;
+        }
+        out_ += "</";
+        out_ += stack_.back();
+        out_ += '>';
+        stack_.pop_back();
+    }
+
+    void attribute(const std::string &name, const std::string &value) override {
+        out_ += ' ';
+        out_ += name;
+        out_ += "=\"";
+        out_ += escXml(value);
+        out_ += '"';
+    }
+
+    void characters(const std::string &text) override {
+        if (pendingAttr_) {
+            out_ += '>';
+            pendingAttr_ = false;
+        }
+        out_ += escXml(text);
+    }
+
+    std::string result() const { return out_; }
+};
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-std::string MathmlToOmml::convert(const std::string &mathmlXml)
+bool MathmlToOmml::convert(const std::string &mathmlXml, OmmlSink &sink)
 {
-    if (mathmlXml.empty()) return {};
+    if (mathmlXml.empty()) return false;
 
     XmlReader reader(mathmlXml);
-    if (!reader.seekToFirstElement()) return {};
+    if (!reader.seekToFirstElement()) return false;
 
     MmlNode root = reader.readElement();
 
-    const char *ns = "xmlns:m=\"http://schemas.openxmlformats.org/officeDocument/2006/math\"";
-    return "<m:oMath " + std::string(ns) + ">" + emitOmml(root) + "</m:oMath>";
+    sink.startElement("m:oMath");
+    sink.attribute("xmlns:m",
+        "http://schemas.openxmlformats.org/officeDocument/2006/math");
+    emitOmml(root, sink);
+    sink.endElement();
+    return true;
+}
+
+std::string MathmlToOmml::convert(const std::string &mathmlXml)
+{
+    StringSink sink;
+    if (convert(mathmlXml, sink))
+        return sink.result();
+    return {};
 }
