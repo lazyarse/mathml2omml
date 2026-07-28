@@ -1,27 +1,9 @@
 #include <gtest/gtest.h>
-#include <QByteArray>
-#include <QXmlStreamWriter>
 #include "mathml2omml.h"
-
-static QString ommlFromMathml(const QString &mathmlXml)
-{
-    QByteArray buf;
-    QXmlStreamWriter w(&buf);
-    w.setAutoFormatting(false);
-    w.writeNamespace(
-        QStringLiteral("http://schemas.openxmlformats.org/officeDocument/2006/math"),
-        QStringLiteral("m"));
-    w.writeStartElement("x");
-    if (!MathmlToOmml::convert(mathmlXml, w))
-        return {};
-    w.writeEndElement();
-    w.writeEndDocument();
-    return QString::fromUtf8(buf);
-}
 
 TEST(Mathml2OmmlTest, SimpleSuperscript)
 {
-    QString mml =
+    std::string mml =
         "<math xmlns=\"http://www.w3.org/1998/Math/MathML\">"
         "<semantics>"
         "<mrow><msup><mi>x</mi><mn>2</mn></msup></mrow>"
@@ -29,125 +11,123 @@ TEST(Mathml2OmmlTest, SimpleSuperscript)
         "</semantics>"
         "</math>";
 
-    QString omml = ommlFromMathml(mml);
+    std::string omml = MathmlToOmml::convert(mml);
 
-    EXPECT_TRUE(omml.contains("<m:oMath")) << "Must produce m:oMath element";
-    EXPECT_TRUE(omml.contains("<m:sSup>")) << "Superscript must produce m:sSup";
-    EXPECT_TRUE(omml.contains("<m:e>")) << "Must have m:e for base";
-    EXPECT_TRUE(omml.contains("<m:sup>")) << "Must have m:sup for exponent";
-    EXPECT_TRUE(omml.contains("<m:t") && omml.contains(">x<")) << "Base text 'x' must be present";
-    EXPECT_TRUE(omml.contains("<m:t") && omml.contains(">2<")) << "Exponent text '2' must be present";
-    EXPECT_FALSE(omml.contains("x^2")) << "Raw TeX must not appear in OMML output";
+    EXPECT_TRUE(omml.find("<m:oMath") != std::string::npos) << "Must produce m:oMath element";
+    EXPECT_TRUE(omml.find("<m:sSup>") != std::string::npos) << "Superscript must produce m:sSup";
+    EXPECT_TRUE(omml.find("<m:e>") != std::string::npos) << "Must have m:e for base";
+    EXPECT_TRUE(omml.find("<m:sup>") != std::string::npos) << "Must have m:sup for exponent";
+    EXPECT_TRUE(omml.find(">x<") != std::string::npos) << "Base text 'x' must be present";
+    EXPECT_TRUE(omml.find(">2<") != std::string::npos) << "Exponent text '2' must be present";
+    EXPECT_TRUE(omml.find("x^2") == std::string::npos) << "Raw TeX must not appear in OMML output";
 }
 
 TEST(Mathml2OmmlTest, Fraction)
 {
-    QString mml =
+    std::string mml =
         "<math><semantics>"
         "<mrow><mfrac><mi>a</mi><mi>b</mi></mfrac></mrow>"
         "<annotation encoding=\"application/x-tex\">\\frac{a}{b}</annotation>"
         "</semantics></math>";
 
-    QString omml = ommlFromMathml(mml);
+    std::string omml = MathmlToOmml::convert(mml);
 
-    EXPECT_TRUE(omml.contains("<m:f>")) << "Fraction must produce m:f";
-    EXPECT_TRUE(omml.contains("<m:num>")) << "Must have m:num for numerator";
-    EXPECT_TRUE(omml.contains("<m:den>")) << "Must have m:den for denominator";
-    EXPECT_TRUE(omml.contains(">a<")) << "Numerator text 'a' must be present";
-    EXPECT_TRUE(omml.contains(">b<")) << "Denominator text 'b' must be present";
+    EXPECT_TRUE(omml.find("<m:f>") != std::string::npos) << "Fraction must produce m:f";
+    EXPECT_TRUE(omml.find("<m:num>") != std::string::npos) << "Must have m:num for numerator";
+    EXPECT_TRUE(omml.find("<m:den>") != std::string::npos) << "Must have m:den for denominator";
+    EXPECT_TRUE(omml.find(">a<") != std::string::npos) << "Numerator text 'a' must be present";
+    EXPECT_TRUE(omml.find(">b<") != std::string::npos) << "Denominator text 'b' must be present";
 }
 
 TEST(Mathml2OmmlTest, SquareRoot)
 {
-    QString mml =
+    std::string mml =
         "<math><semantics>"
         "<mrow><msqrt><mi>x</mi></msqrt></mrow>"
         "<annotation encoding=\"application/x-tex\">\\sqrt{x}</annotation>"
         "</semantics></math>";
 
-    QString omml = ommlFromMathml(mml);
+    std::string omml = MathmlToOmml::convert(mml);
 
-    EXPECT_TRUE(omml.contains("<m:rad>")) << "Square root must produce m:rad";
-    EXPECT_TRUE(omml.contains("<m:deg/>") || omml.contains("<m:deg />")
-                || omml.contains("<m:deg></m:deg>"))
-        << "m:deg must be empty for sqrt";
-    EXPECT_TRUE(omml.contains(">x<")) << "Radicand text 'x' must be present";
+    EXPECT_TRUE(omml.find("<m:rad>") != std::string::npos) << "Square root must produce m:rad";
+    EXPECT_TRUE(omml.find("<m:deg/>") != std::string::npos) << "m:deg must be empty for sqrt";
+    EXPECT_TRUE(omml.find(">x<") != std::string::npos) << "Radicand text 'x' must be present";
 }
 
 TEST(Mathml2OmmlTest, NthRootReordersChildren)
 {
-    QString mml =
+    std::string mml =
         "<math><semantics>"
         "<mrow><mroot><mi>x</mi><mn>3</mn></mroot></mrow>"
         "<annotation encoding=\"application/x-tex\">\\sqrt[3]{x}</annotation>"
         "</semantics></math>";
 
-    QString omml = ommlFromMathml(mml);
+    std::string omml = MathmlToOmml::convert(mml);
 
-    int degPos = omml.indexOf("<m:deg>");
-    int ePos = omml.indexOf("<m:e>");
-    EXPECT_GE(degPos, 0) << "m:deg must be present";
-    EXPECT_GE(ePos, 0) << "m:e must be present";
+    size_t degPos = omml.find("<m:deg>");
+    size_t ePos = omml.find("<m:e>");
+    EXPECT_NE(degPos, std::string::npos) << "m:deg must be present";
+    EXPECT_NE(ePos, std::string::npos) << "m:e must be present";
     EXPECT_LT(degPos, ePos) << "m:deg must precede m:e in OMML output";
-    EXPECT_TRUE(omml.contains(">3<")) << "Degree value '3' must be present";
-    EXPECT_TRUE(omml.contains(">x<")) << "Radicand 'x' must be present";
+    EXPECT_TRUE(omml.find(">3<") != std::string::npos) << "Degree value '3' must be present";
+    EXPECT_TRUE(omml.find(">x<") != std::string::npos) << "Radicand 'x' must be present";
 }
 
 TEST(Mathml2OmmlTest, Subscript)
 {
-    QString mml =
+    std::string mml =
         "<math><semantics>"
         "<mrow><msub><mi>a</mi><mn>1</mn></msub></mrow>"
         "<annotation encoding=\"application/x-tex\">a_1</annotation>"
         "</semantics></math>";
 
-    QString omml = ommlFromMathml(mml);
+    std::string omml = MathmlToOmml::convert(mml);
 
-    EXPECT_TRUE(omml.contains("<m:sSub>")) << "Subscript must produce m:sSub";
-    EXPECT_TRUE(omml.contains("<m:sub>")) << "Must have m:sub element";
-    EXPECT_TRUE(omml.contains(">a<")) << "Base 'a' must be present";
-    EXPECT_TRUE(omml.contains(">1<")) << "Subscript '1' must be present";
+    EXPECT_TRUE(omml.find("<m:sSub>") != std::string::npos) << "Subscript must produce m:sSub";
+    EXPECT_TRUE(omml.find("<m:sub>") != std::string::npos) << "Must have m:sub element";
+    EXPECT_TRUE(omml.find(">a<") != std::string::npos) << "Base 'a' must be present";
+    EXPECT_TRUE(omml.find(">1<") != std::string::npos) << "Subscript '1' must be present";
 }
 
 TEST(Mathml2OmmlTest, SubSup)
 {
-    QString mml =
+    std::string mml =
         "<math><semantics>"
         "<mrow><msubsup><mi>A</mi><mn>1</mn><mn>2</mn></msubsup></mrow>"
         "<annotation encoding=\"application/x-tex\">A_1^2</annotation>"
         "</semantics></math>";
 
-    QString omml = ommlFromMathml(mml);
+    std::string omml = MathmlToOmml::convert(mml);
 
-    EXPECT_TRUE(omml.contains("<m:sSubSup>")) << "SubSup must produce m:sSubSup";
-    EXPECT_TRUE(omml.contains("<m:sub>")) << "Must have m:sub element";
-    EXPECT_TRUE(omml.contains("<m:sup>")) << "Must have m:sup element";
-    EXPECT_TRUE(omml.contains(">A<")) << "Base 'A' must be present";
-    EXPECT_TRUE(omml.contains(">1<")) << "Subscript '1' must be present";
-    EXPECT_TRUE(omml.contains(">2<")) << "Superscript '2' must be present";
+    EXPECT_TRUE(omml.find("<m:sSubSup>") != std::string::npos) << "SubSup must produce m:sSubSup";
+    EXPECT_TRUE(omml.find("<m:sub>") != std::string::npos) << "Must have m:sub element";
+    EXPECT_TRUE(omml.find("<m:sup>") != std::string::npos) << "Must have m:sup element";
+    EXPECT_TRUE(omml.find(">A<") != std::string::npos) << "Base 'A' must be present";
+    EXPECT_TRUE(omml.find(">1<") != std::string::npos) << "Subscript '1' must be present";
+    EXPECT_TRUE(omml.find(">2<") != std::string::npos) << "Superscript '2' must be present";
 }
 
 TEST(Mathml2OmmlTest, ItalicStyle)
 {
-    QString mml =
+    std::string mml =
         "<math><semantics>"
         "<mrow><mi>x</mi></mrow>"
         "</semantics></math>";
 
-    QString omml = ommlFromMathml(mml);
+    std::string omml = MathmlToOmml::convert(mml);
 
-    EXPECT_TRUE(omml.contains("<m:sty>i</m:sty>")) << "mi must use italic style";
+    EXPECT_TRUE(omml.find("<m:sty>i</m:sty>") != std::string::npos) << "mi must use italic style";
 }
 
 TEST(Mathml2OmmlTest, OverAndUnderLimits)
 {
-    QString mml =
+    std::string mml =
         "<math><semantics>"
         "<mrow><mover><mi>x</mi><mo>&#xAF;</mo></mover></mrow>"
         "</semantics></math>";
 
-    QString omml = ommlFromMathml(mml);
+    std::string omml = MathmlToOmml::convert(mml);
 
-    EXPECT_TRUE(omml.contains("<m:limUpp>")) << "mover must produce m:limUpp";
-    EXPECT_TRUE(omml.contains(">x<")) << "Base 'x' must be present";
+    EXPECT_TRUE(omml.find("<m:limUpp>") != std::string::npos) << "mover must produce m:limUpp";
+    EXPECT_TRUE(omml.find(">x<") != std::string::npos) << "Base 'x' must be present";
 }

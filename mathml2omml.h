@@ -1,11 +1,9 @@
 #pragma once
 
-#include <QString>
-
-class QXmlStreamWriter;
+#include <string>
 
 class MathmlToOmml
 {
 public:
-    static bool convert(const QString &mathmlXml, QXmlStreamWriter &w);
+    static std::string convert(const std::string &mathmlXml);
 };
