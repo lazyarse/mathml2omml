@@ -68,14 +68,56 @@ int main() {
 Both converters accept a custom sink for streaming output:
 
 ```cpp
-struct MySink : XmlSink {
-    void startElement(const std::string &name) override { /* ... */ }
-    void endElement() override { /* ... */ }
-    void attribute(const std::string &name, const std::string &value) override { /* ... */ }
-    void characters(const std::string &text) override { /* ... */ }
+#include <string>
+#include <vector>
+
+// A custom XmlSink that pretty-prints XML output with indentation.
+// Useful for debugging or generating human-readable OMML.
+struct PrettySink : XmlSink {
+    std::vector<std::string> stack_;  // tracks open elements for end-tag names + indentation
+    std::string out_;
+    bool openTag_ = false;
+
+    void startElement(const std::string &name) override {
+        closeOpenTag();
+        out_ += std::string(stack_.size() * 2, ' ') + '<' + name;
+        openTag_ = true;
+        stack_.push_back(name);
+    }
+
+    void endElement() override {
+        if (openTag_) {
+            closeVoidTag();
+            stack_.pop_back();
+        } else {
+            out_ += std::string((stack_.size() - 1) * 2, ' ')
+                  + "</" + stack_.back() + ">\n";
+            stack_.pop_back();
+        }
+    }
+
+    void attribute(const std::string &name, const std::string &value) override {
+        out_ += ' ' + name + "=\"" + value + '"';
+    }
+
+    void characters(const std::string &text) override {
+        closeOpenTag();
+        out_ += std::string(stack_.size() * 2, ' ') + text + '\n';
+    }
+
+    std::string result() const { return out_; }
+
+private:
+    void closeOpenTag() {
+        if (openTag_) { out_ += ">\n"; openTag_ = false; }
+    }
+
+    void closeVoidTag() {
+        if (openTag_) { out_ += "/>\n"; openTag_ = false; }
+    }
 };
 
-MySink sink;
+PrettySink sink;
 MathmlToOmml::convert(mathmlInput, sink);  // or OmmlToMathml::convert(ommlInput, sink);
 ```
 
