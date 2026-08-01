@@ -2,6 +2,10 @@
 
 A zero-dependency C++23 library for converting between Mathematical Markup Language (MathML) and Office Mathematical Markup Language (OMML).
 
+## License
+
+Released under the [GNU General Public License v3.0](LICENSE) (or, at your option, any later version). It comes with ABSOLUTELY NO WARRANTY.
+
 ## Build
 
 ```sh
