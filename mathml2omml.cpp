@@ -1,14 +1,18 @@
 #include "mathml2omml.h"
 
-#include <map>
-#include <vector>
-#include <cstdlib>
 #include <algorithm>
+#include <charconv>
+#include <cstdint>
+#include <map>
+#include <optional>
+#include <ranges>
+#include <string_view>
+#include <vector>
 
 // ── Simple XML reader ─────────────────────────────────────────────────────────
 
 class XmlReader {
-    const std::string &s;
+    const std::string_view s;
     size_t p = 0;
 
     char peek() const { return p < s.size() ? s[p] : '\0'; }
@@ -26,7 +30,7 @@ class XmlReader {
             while (p < s.size() && (isAlphaNum(s[p]) || s[p] == '_' || s[p] == '-' || s[p] == ':'))
                 ++p;
         }
-        return s.substr(start, p - start);
+        return std::string(s.substr(start, p - start));
     }
 
     std::string readAttrValue() {
@@ -36,35 +40,62 @@ class XmlReader {
         ++p;
         size_t start = p;
         while (p < s.size() && s[p] != q) ++p;
-        std::string raw = s.substr(start, p - start);
+        std::string raw(s.substr(start, p - start));
         if (p < s.size()) ++p;
         return decodeEnt(raw);
     }
 
-    std::string decodeEnt(const std::string &raw) {
+    static void appendUtf8(std::string &out, uint32_t cp) {
+        if (cp < 0x80) {
+            out += static_cast<char>(cp);
+        } else if (cp < 0x800) {
+            out += static_cast<char>(0xC0 | (cp >> 6));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        } else if (cp < 0x10000) {
+            out += static_cast<char>(0xE0 | (cp >> 12));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        } else {
+            out += static_cast<char>(0xF0 | (cp >> 18));
+            out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+            out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (cp & 0x3F));
+        }
+    }
+
+    std::string decodeEnt(std::string_view raw) {
         std::string out;
         out.reserve(raw.size());
         for (size_t i = 0; i < raw.size(); ++i) {
             if (raw[i] == '&') {
                 size_t semi = raw.find(';', i);
-                if (semi == std::string::npos) { out += raw[i]; continue; }
-                std::string ent = raw.substr(i + 1, semi - i - 1);
+                if (semi == std::string_view::npos) { out += raw[i]; continue; }
+                std::string_view ent = raw.substr(i + 1, semi - i - 1);
                 if (ent == "amp") out += '&';
                 else if (ent == "lt") out += '<';
                 else if (ent == "gt") out += '>';
                 else if (ent == "quot") out += '"';
                 else if (ent == "apos") out += '\'';
                 else if (ent.size() > 1 && ent[0] == '#') {
-                    bool hex = ent.size() > 2 && ent[1] == 'x';
-                    const char *nptr = ent.c_str() + (hex ? 2 : 1);
-                    char *end = nullptr;
-                    long cp = std::strtol(nptr, &end, hex ? 16 : 10);
-                    if (end != nptr && cp > 0 && cp <= 0x10FFFF)
-                        out += static_cast<char>(cp);
+                    int base = 10;
+                    std::string_view digits = ent.substr(1);
+                    if (digits.size() > 1 && digits[0] == 'x') {
+                        base = 16;
+                        digits.remove_prefix(1);
+                    }
+                    uint32_t cp = 0;
+                    auto [ptr, ec] = std::from_chars(digits.data(),
+                                                     digits.data() + digits.size(),
+                                                     cp, base);
+                    bool valid = ec == std::errc() && ptr == digits.data() + digits.size()
+                                 && cp > 0 && cp <= 0x10FFFF
+                                 && !(cp >= 0xD800 && cp <= 0xDFFF);
+                    if (valid)
+                        appendUtf8(out, cp);
                     else
                         out += raw.substr(i, semi - i + 1);
                 } else {
-                    out += raw.substr(i, semi - i + 1);
+                    out += std::string(raw.substr(i, semi - i + 1));
                 }
                 i = semi;
             } else {
@@ -78,7 +109,7 @@ class XmlReader {
     static bool isAlphaNum(char c) { return isAlpha(c) || (c >= '0' && c <= '9'); }
 
 public:
-    explicit XmlReader(const std::string &str) : s(str) {}
+    explicit XmlReader(std::string_view str) : s(str) {}
 
     struct MmlNode {
         std::string tag;
@@ -94,13 +125,13 @@ public:
             if (s[p] != '<') return false;
             if (p + 1 < s.size() && s[p + 1] == '?') {
                 size_t end = s.find("?>", p);
-                if (end == std::string::npos) return false;
+                if (end == std::string_view::npos) return false;
                 p = end + 2;
                 continue;
             }
             if (p + 3 < s.size() && s[p + 1] == '!' && s[p + 2] == '-' && s[p + 3] == '-') {
                 size_t end = s.find("-->", p);
-                if (end == std::string::npos) return false;
+                if (end == std::string_view::npos) return false;
                 p = end + 3;
                 continue;
             }
@@ -158,7 +189,7 @@ public:
             } else {
                 size_t start = p;
                 while (p < s.size() && s[p] != '<') ++p;
-                std::string txt = s.substr(start, p - start);
+                std::string txt(s.substr(start, p - start));
                 if (!txt.empty())
                     node.text += decodeEnt(txt);
             }
@@ -169,11 +200,11 @@ public:
 
 // ── Style helpers ─────────────────────────────────────────────────────────────
 
-static std::string defaultStyleForTag(const std::string &tag) {
+static std::string defaultStyleForTag(std::string_view tag) {
     return tag == "mi" ? "i" : "p";
 }
 
-static std::string mathvariantToStyle(const std::string &variant) {
+static std::string mathvariantToStyle(std::string_view variant) {
     if (variant == "normal") return "p";
     if (variant == "italic") return "i";
     if (variant == "bold") return "b";
@@ -198,13 +229,12 @@ static void emitOmml(const MmlNode &node, XmlSink &sink,
 static void emitTextRun(const MmlNode &node, XmlSink &sink,
                         const StyleContext &ctx) {
     std::string style = defaultStyleForTag(node.tag);
-    auto it = node.attrs.find("mathvariant");
-    if (it != node.attrs.end()) {
-        std::string s = mathvariantToStyle(it->second);
-        if (!s.empty()) style = s;
+    if (auto it = node.attrs.find("mathvariant"); it != node.attrs.end()) {
+        if (std::string s = mathvariantToStyle(it->second); !s.empty())
+            style = s;
     } else if (!ctx.mathvariant.empty()) {
-        std::string s = mathvariantToStyle(ctx.mathvariant);
-        if (!s.empty()) style = s;
+        if (std::string s = mathvariantToStyle(ctx.mathvariant); !s.empty())
+            style = s;
     }
 
     sink.startElement("m:r");
@@ -236,8 +266,8 @@ static void emitOmml(const MmlNode &node, XmlSink &sink,
         return emitTextRun(node, sink, ctx);
     if (t == "mspace") {
         // Drop ordinary spaces, but emit m:br for line breaks
-        auto it = node.attrs.find("linebreak");
-        if (it != node.attrs.end() && it->second == "newline") {
+        if (auto it = node.attrs.find("linebreak");
+            it != node.attrs.end() && it->second == "newline") {
             sink.startElement("m:br");
             sink.endElement();
         }
@@ -250,11 +280,12 @@ static void emitOmml(const MmlNode &node, XmlSink &sink,
         return;
     }
     if (t == "mmultiscripts") {
-        size_t mp = node.children.size();
-        for (size_t i = 0; i < node.children.size(); ++i)
-            if (node.children[i].tag == "mprescripts") { mp = i; break; }
+        auto mpIt = std::ranges::find_if(node.children,
+            [](const MmlNode &c) { return c.tag == "mprescripts"; });
+        bool hasPre = mpIt != node.children.end();
+        size_t mp = static_cast<size_t>(std::ranges::distance(node.children.begin(), mpIt));
 
-        if (mp < node.children.size()) {
+        if (hasPre) {
             sink.startElement("m:sPre");
             sink.startElement("m:e");
             if (node.children.size() >= 1) emitOmml(node.children[0], sink, ctx);
@@ -417,8 +448,8 @@ static void emitOmml(const MmlNode &node, XmlSink &sink,
 
     if (t == "mstyle") {
         StyleContext childCtx = ctx;
-        auto mvIt = node.attrs.find("mathvariant");
-        if (mvIt != node.attrs.end()) childCtx.mathvariant = mvIt->second;
+        if (auto mvIt = node.attrs.find("mathvariant"); mvIt != node.attrs.end())
+            childCtx.mathvariant = mvIt->second;
         for (const auto &c : node.children) emitOmml(c, sink, childCtx);
         return;
     }
@@ -443,28 +474,32 @@ static void emitOmml(const MmlNode &node, XmlSink &sink,
 
 // ── OMML → MathML helpers ──────────────────────────────────────────────────
 
-static std::string stripNs(const std::string &tag) {
+static std::string stripNs(std::string_view tag) {
     size_t colon = tag.find(':');
-    return colon != std::string::npos ? tag.substr(colon + 1) : tag;
+    return colon != std::string_view::npos ? std::string(tag.substr(colon + 1))
+                                           : std::string(tag);
 }
 
-static int findChildIdx(const MmlNode &node, const std::string &localTag) {
-    for (int i = 0; i < (int)node.children.size(); ++i) {
-        if (stripNs(node.children[i].tag) == localTag) return i;
-    }
-    return -1;
+static std::optional<std::size_t> findChild(const MmlNode &node,
+                                            std::string_view localTag) {
+    auto it = std::ranges::find_if(node.children, [localTag](const MmlNode &c) {
+        return stripNs(c.tag) == localTag;
+    });
+    if (it == node.children.end()) return std::nullopt;
+    return static_cast<std::size_t>(std::ranges::distance(node.children.begin(), it));
 }
 
-static std::string getAttr(const MmlNode &node, const std::string &localKey) {
+static std::optional<std::string> getAttr(const MmlNode &node,
+                                          std::string_view localKey) {
     for (const auto &[k, v] : node.attrs) {
         if (stripNs(k) == localKey) return v;
     }
-    return {};
+    return std::nullopt;
 }
 
-static std::string styleToMathvariant(const std::string &scr, const std::string &sty) {
-    std::string s = scr.empty() ? "roman" : scr;
-    std::string t = sty.empty() ? "p" : sty;
+static std::string styleToMathvariant(std::string_view scr, std::string_view sty) {
+    std::string s = scr.empty() ? "roman" : std::string(scr);
+    std::string t = sty.empty() ? "p" : std::string(sty);
 
     if (s == "roman") {
         if (t == "p") return "normal";
@@ -495,12 +530,11 @@ static std::string styleToMathvariant(const std::string &scr, const std::string 
     return "normal";
 }
 
-static std::string guessTokenType(const std::string &text) {
+static std::string guessTokenType(std::string_view text) {
     if (text.empty()) return "mi";
     bool allDigits = true;
     bool hasOperator = false;
-    for (size_t i = 0; i < text.size(); ++i) {
-        unsigned char c = static_cast<unsigned char>(text[i]);
+    for (unsigned char c : text) {
         if (c >= '0' && c <= '9') continue;
         if (c == '.' && allDigits) continue;
         allDigits = false;
@@ -524,23 +558,40 @@ static std::string guessTokenType(const std::string &text) {
 
 // Read property value from a Pr element's child element's m:val attribute.
 // e.g. <m:fPr><m:type m:val="noBar"/></m:fPr> => readProp(fPr, "type") => "noBar"
-static std::string readProp(const MmlNode &prNode, const std::string &propName) {
-    int idx = findChildIdx(prNode, propName);
-    if (idx < 0) return {};
-    return getAttr(prNode.children[idx], "val");
+static std::optional<std::string> readProp(const MmlNode &prNode,
+                                           std::string_view propName) {
+    auto idx = findChild(prNode, propName);
+    if (!idx) return std::nullopt;
+    return getAttr(prNode.children[*idx], "val");
 }
 
 // Check if a property child element exists (presence check) or has val="1"/"true"
-static bool propFlag(const MmlNode &node, const std::string &prTag,
-                     const std::string &propName)
+static bool propFlag(const MmlNode &node, std::string_view prTag,
+                     std::string_view propName)
 {
-    int prIdx = findChildIdx(node, prTag);
-    if (prIdx < 0) return false;
-    int propIdx = findChildIdx(node.children[prIdx], propName);
-    if (propIdx < 0) return false;
+    auto prIdx = findChild(node, prTag);
+    if (!prIdx) return false;
+    auto propIdx = findChild(node.children[*prIdx], propName);
+    if (!propIdx) return false;
     // If the property element has no val attribute, its presence is enough
-    std::string v = getAttr(node.children[prIdx].children[propIdx], "val");
-    return v.empty() || v == "1" || v == "true";
+    auto v = getAttr(node.children[*prIdx].children[*propIdx], "val");
+    return !v || v->empty() || *v == "1" || *v == "true";
+}
+
+// Positions of e/sub/sup children (single pass, last occurrence wins).
+struct ScriptParts {
+    std::optional<std::size_t> e, sub, sup;
+};
+
+static ScriptParts findScriptParts(const MmlNode &node) {
+    ScriptParts parts;
+    for (std::size_t i = 0; i < node.children.size(); ++i) {
+        std::string ct = stripNs(node.children[i].tag);
+        if (ct == "e") parts.e = i;
+        else if (ct == "sub") parts.sub = i;
+        else if (ct == "sup") parts.sup = i;
+    }
+    return parts;
 }
 
 // ── Recursive MathML emitter (reverse of emitOmml) ─────────────────────────
@@ -558,10 +609,10 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
     // ── Root elements ──────────────────────────────────────────────────────
     if (tag == "oMath" || tag == "oMathPara") {
         bool displayBlock = (tag == "oMathPara");
-        int oMathIdx = findChildIdx(node, "oMath");
+        auto oMathIdx = findChild(node, "oMath");
         sink.startElement("math");
         if (displayBlock) sink.attribute("display", "block");
-        if (oMathIdx >= 0) emitContainerChildren(node.children[oMathIdx], sink);
+        if (oMathIdx) emitContainerChildren(node.children[*oMathIdx], sink);
         else emitContainerChildren(node, sink);
         sink.endElement();
         return;
@@ -586,24 +637,24 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
 
     // ── Token element: m:r (run) ──────────────────────────────────────────
     if (tag == "r") {
-        int rPrIdx = findChildIdx(node, "rPr");
-        int tIdx = findChildIdx(node, "t");
+        auto rPrIdx = findChild(node, "rPr");
+        auto tIdx = findChild(node, "t");
 
         bool nor = false;
         std::string scr, sty;
-        if (rPrIdx >= 0) {
-            const MmlNode &pr = node.children[rPrIdx];
-            nor = findChildIdx(pr, "nor") >= 0;
-            int scrIdx = findChildIdx(pr, "scr");
-            if (scrIdx >= 0) scr = getAttr(pr.children[scrIdx], "val");
-            int styIdx = findChildIdx(pr, "sty");
-            if (styIdx >= 0) sty = getAttr(pr.children[styIdx], "val");
-            if (sty.empty() && findChildIdx(pr, "b") >= 0) sty = "b";
-            if (sty.empty() && findChildIdx(pr, "i") >= 0) sty = "i";
+        if (rPrIdx) {
+            const MmlNode &pr = node.children[*rPrIdx];
+            nor = findChild(pr, "nor").has_value();
+            if (auto scrIdx = findChild(pr, "scr"))
+                scr = getAttr(pr.children[*scrIdx], "val").value_or("");
+            if (auto styIdx = findChild(pr, "sty"))
+                sty = getAttr(pr.children[*styIdx], "val").value_or("");
+            if (sty.empty() && findChild(pr, "b")) sty = "b";
+            if (sty.empty() && findChild(pr, "i")) sty = "i";
         }
 
         std::string text;
-        if (tIdx >= 0) text = node.children[tIdx].text;
+        if (tIdx) text = node.children[*tIdx].text;
 
         std::string mathvariant = styleToMathvariant(scr, sty);
         std::string tokType = nor ? "mtext" : guessTokenType(text);
@@ -621,16 +672,11 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
 
     // ── m:sSup → msup ─────────────────────────────────────────────────────
     if (tag == "sSup") {
-        int ei = -1, supi = -1;
-        for (int i = 0; i < (int)node.children.size(); ++i) {
-            std::string ct = stripNs(node.children[i].tag);
-            if (ct == "e") ei = i;
-            else if (ct == "sup") supi = i;
-        }
+        ScriptParts p = findScriptParts(node);
         sink.startElement("msup");
-        if (ei >= 0) emitContainerChildren(node.children[ei], sink);
+        if (p.e) emitContainerChildren(node.children[*p.e], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
-        if (supi >= 0) emitContainerChildren(node.children[supi], sink);
+        if (p.sup) emitContainerChildren(node.children[*p.sup], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
         sink.endElement();
         return;
@@ -638,16 +684,11 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
 
     // ── m:sSub → msub ─────────────────────────────────────────────────────
     if (tag == "sSub") {
-        int ei = -1, subi = -1;
-        for (int i = 0; i < (int)node.children.size(); ++i) {
-            std::string ct = stripNs(node.children[i].tag);
-            if (ct == "e") ei = i;
-            else if (ct == "sub") subi = i;
-        }
+        ScriptParts p = findScriptParts(node);
         sink.startElement("msub");
-        if (ei >= 0) emitContainerChildren(node.children[ei], sink);
+        if (p.e) emitContainerChildren(node.children[*p.e], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
-        if (subi >= 0) emitContainerChildren(node.children[subi], sink);
+        if (p.sub) emitContainerChildren(node.children[*p.sub], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
         sink.endElement();
         return;
@@ -655,19 +696,13 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
 
     // ── m:sSubSup → msubsup ───────────────────────────────────────────────
     if (tag == "sSubSup") {
-        int ei = -1, subi = -1, supi = -1;
-        for (int i = 0; i < (int)node.children.size(); ++i) {
-            std::string ct = stripNs(node.children[i].tag);
-            if (ct == "e") ei = i;
-            else if (ct == "sub") subi = i;
-            else if (ct == "sup") supi = i;
-        }
+        ScriptParts p = findScriptParts(node);
         sink.startElement("msubsup");
-        if (ei >= 0) emitContainerChildren(node.children[ei], sink);
+        if (p.e) emitContainerChildren(node.children[*p.e], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
-        if (subi >= 0) emitContainerChildren(node.children[subi], sink);
+        if (p.sub) emitContainerChildren(node.children[*p.sub], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
-        if (supi >= 0) emitContainerChildren(node.children[supi], sink);
+        if (p.sup) emitContainerChildren(node.children[*p.sup], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
         sink.endElement();
         return;
@@ -675,21 +710,15 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
 
     // ── m:sPre → mmultiscripts + mprescripts ──────────────────────────────
     if (tag == "sPre") {
-        int ei = -1, subi = -1, supi = -1;
-        for (int i = 0; i < (int)node.children.size(); ++i) {
-            std::string ct = stripNs(node.children[i].tag);
-            if (ct == "e") ei = i;
-            else if (ct == "sub") subi = i;
-            else if (ct == "sup") supi = i;
-        }
+        ScriptParts p = findScriptParts(node);
         sink.startElement("mmultiscripts");
-        if (ei >= 0) emitContainerChildren(node.children[ei], sink);
+        if (p.e) emitContainerChildren(node.children[*p.e], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
         sink.startElement("mprescripts");
         sink.endElement();
-        if (subi >= 0) emitContainerChildren(node.children[subi], sink);
+        if (p.sub) emitContainerChildren(node.children[*p.sub], sink);
         else { sink.startElement("none"); sink.endElement(); }
-        if (supi >= 0) emitContainerChildren(node.children[supi], sink);
+        if (p.sup) emitContainerChildren(node.children[*p.sup], sink);
         else { sink.startElement("none"); sink.endElement(); }
         sink.endElement();
         return;
@@ -697,12 +726,12 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
 
     // ── m:f → mfrac (with optional bevelled/linethickness) ────────────────
     if (tag == "f") {
-        int fPrIdx = findChildIdx(node, "fPr");
-        int numIdx = findChildIdx(node, "num");
-        int denIdx = findChildIdx(node, "den");
+        auto fPrIdx = findChild(node, "fPr");
+        auto numIdx = findChild(node, "num");
+        auto denIdx = findChild(node, "den");
 
         std::string type;
-        if (fPrIdx >= 0) type = readProp(node.children[fPrIdx], "type");
+        if (fPrIdx) type = readProp(node.children[*fPrIdx], "type").value_or("");
 
         sink.startElement("mfrac");
         if (type == "lin" || type == "noBar") {
@@ -710,9 +739,9 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
         } else if (type == "skw") {
             sink.attribute("bevelled", "true");
         }
-        if (numIdx >= 0) emitContainerChildren(node.children[numIdx], sink);
+        if (numIdx) emitContainerChildren(node.children[*numIdx], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
-        if (denIdx >= 0) emitContainerChildren(node.children[denIdx], sink);
+        if (denIdx) emitContainerChildren(node.children[*denIdx], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
         sink.endElement();
         return;
@@ -720,22 +749,22 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
 
     // ── m:rad → msqrt (empty deg) or mroot (deg with content) ─────────────
     if (tag == "rad") {
-        int degIdx = findChildIdx(node, "deg");
-        int eIdx = findChildIdx(node, "e");
+        auto degIdx = findChild(node, "deg");
+        auto eIdx = findChild(node, "e");
 
         bool degHide = propFlag(node, "radPr", "degHide");
-        bool hasDeg = degIdx >= 0 && (!node.children[degIdx].children.empty()
-                                       || !node.children[degIdx].text.empty());
+        bool hasDeg = degIdx && (!node.children[*degIdx].children.empty()
+                                 || !node.children[*degIdx].text.empty());
 
         if (!hasDeg || degHide) {
             sink.startElement("msqrt");
-            if (eIdx >= 0) emitContainerChildren(node.children[eIdx], sink);
+            if (eIdx) emitContainerChildren(node.children[*eIdx], sink);
             sink.endElement();
         } else {
             sink.startElement("mroot");
-            if (eIdx >= 0) emitContainerChildren(node.children[eIdx], sink);
+            if (eIdx) emitContainerChildren(node.children[*eIdx], sink);
             else { sink.startElement("mrow"); sink.endElement(); }
-            emitContainerChildren(node.children[degIdx], sink);
+            emitContainerChildren(node.children[*degIdx], sink);
             sink.endElement();
         }
         return;
@@ -743,12 +772,12 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
 
     // ── m:limUpp → mover ──────────────────────────────────────────────────
     if (tag == "limUpp") {
-        int eIdx = findChildIdx(node, "e");
-        int limIdx = findChildIdx(node, "lim");
+        auto eIdx = findChild(node, "e");
+        auto limIdx = findChild(node, "lim");
         sink.startElement("mover");
-        if (eIdx >= 0) emitContainerChildren(node.children[eIdx], sink);
+        if (eIdx) emitContainerChildren(node.children[*eIdx], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
-        if (limIdx >= 0) emitContainerChildren(node.children[limIdx], sink);
+        if (limIdx) emitContainerChildren(node.children[*limIdx], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
         sink.endElement();
         return;
@@ -756,12 +785,12 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
 
     // ── m:limLow → munder ─────────────────────────────────────────────────
     if (tag == "limLow") {
-        int eIdx = findChildIdx(node, "e");
-        int limIdx = findChildIdx(node, "lim");
+        auto eIdx = findChild(node, "e");
+        auto limIdx = findChild(node, "lim");
         sink.startElement("munder");
-        if (eIdx >= 0) emitContainerChildren(node.children[eIdx], sink);
+        if (eIdx) emitContainerChildren(node.children[*eIdx], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
-        if (limIdx >= 0) emitContainerChildren(node.children[limIdx], sink);
+        if (limIdx) emitContainerChildren(node.children[*limIdx], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
         sink.endElement();
         return;
@@ -769,22 +798,22 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
 
     // ── m:nary → n-ary operator (sum, prod, int) ──────────────────────────
     if (tag == "nary") {
-        int naryPrIdx = findChildIdx(node, "naryPr");
-        int subIdx = findChildIdx(node, "sub");
-        int supIdx = findChildIdx(node, "sup");
-        int eIdx = findChildIdx(node, "e");
+        auto naryPrIdx = findChild(node, "naryPr");
+        auto subIdx = findChild(node, "sub");
+        auto supIdx = findChild(node, "sup");
+        auto eIdx = findChild(node, "e");
 
         std::string chr, limLoc;
-        if (naryPrIdx >= 0) {
-            chr = readProp(node.children[naryPrIdx], "chr");
-            limLoc = readProp(node.children[naryPrIdx], "limLoc");
+        if (naryPrIdx) {
+            chr = readProp(node.children[*naryPrIdx], "chr").value_or("");
+            limLoc = readProp(node.children[*naryPrIdx], "limLoc").value_or("");
         }
 
         bool useUnderOver = (limLoc == "undOvr");
-        bool hasSub = subIdx >= 0 && (!node.children[subIdx].children.empty()
-                                       || !node.children[subIdx].text.empty());
-        bool hasSup = supIdx >= 0 && (!node.children[supIdx].children.empty()
-                                       || !node.children[supIdx].text.empty());
+        bool hasSub = subIdx && (!node.children[*subIdx].children.empty()
+                                 || !node.children[*subIdx].text.empty());
+        bool hasSup = supIdx && (!node.children[*supIdx].children.empty()
+                                 || !node.children[*supIdx].text.empty());
 
         sink.startElement("mrow");
 
@@ -793,30 +822,30 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
             sink.startElement("mo");
             if (!chr.empty()) sink.characters(chr);
             sink.endElement();
-            emitContainerChildren(node.children[subIdx], sink);
-            emitContainerChildren(node.children[supIdx], sink);
+            emitContainerChildren(node.children[*subIdx], sink);
+            emitContainerChildren(node.children[*supIdx], sink);
             sink.endElement();
         } else if (hasSub && hasSup) {
             sink.startElement("msubsup");
             sink.startElement("mo");
             if (!chr.empty()) sink.characters(chr);
             sink.endElement();
-            emitContainerChildren(node.children[subIdx], sink);
-            emitContainerChildren(node.children[supIdx], sink);
+            emitContainerChildren(node.children[*subIdx], sink);
+            emitContainerChildren(node.children[*supIdx], sink);
             sink.endElement();
         } else if (hasSub) {
             sink.startElement("msub");
             sink.startElement("mo");
             if (!chr.empty()) sink.characters(chr);
             sink.endElement();
-            emitContainerChildren(node.children[subIdx], sink);
+            emitContainerChildren(node.children[*subIdx], sink);
             sink.endElement();
         } else if (hasSup) {
             sink.startElement("msup");
             sink.startElement("mo");
             if (!chr.empty()) sink.characters(chr);
             sink.endElement();
-            emitContainerChildren(node.children[supIdx], sink);
+            emitContainerChildren(node.children[*supIdx], sink);
             sink.endElement();
         } else {
             sink.startElement("mo");
@@ -824,23 +853,23 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
             sink.endElement();
         }
 
-        if (eIdx >= 0) emitContainerChildren(node.children[eIdx], sink);
+        if (eIdx) emitContainerChildren(node.children[*eIdx], sink);
         sink.endElement(); // mrow
         return;
     }
 
     // ── m:d → delimiters (parentheses, brackets) ──────────────────────────
     if (tag == "d") {
-        int dPrIdx = findChildIdx(node, "dPr");
-        int eIdx = findChildIdx(node, "e");
+        auto dPrIdx = findChild(node, "dPr");
+        auto eIdx = findChild(node, "e");
 
         std::string begChr = "(", endChr = ")", sepChr;
-        if (dPrIdx >= 0) {
-            std::string b = readProp(node.children[dPrIdx], "begChr");
+        if (dPrIdx) {
+            std::string b = readProp(node.children[*dPrIdx], "begChr").value_or("");
             if (!b.empty()) begChr = b;
-            std::string en = readProp(node.children[dPrIdx], "endChr");
+            std::string en = readProp(node.children[*dPrIdx], "endChr").value_or("");
             if (!en.empty()) endChr = en;
-            sepChr = readProp(node.children[dPrIdx], "sepChr");
+            sepChr = readProp(node.children[*dPrIdx], "sepChr").value_or("");
         }
 
         sink.startElement("mrow");
@@ -852,7 +881,7 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
         }
         sink.endElement();
 
-        if (eIdx >= 0) emitContainerChildren(node.children[eIdx], sink);
+        if (eIdx) emitContainerChildren(node.children[*eIdx], sink);
 
         sink.startElement("mo");
         if (!endChr.empty()) {
@@ -867,17 +896,17 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
 
     // ── m:acc → accent (hat, tilde, dot, etc.) ────────────────────────────
     if (tag == "acc") {
-        int accPrIdx = findChildIdx(node, "accPr");
-        int eIdx = findChildIdx(node, "e");
+        auto accPrIdx = findChild(node, "accPr");
+        auto eIdx = findChild(node, "e");
 
         std::string chr = "\u0302";
-        if (accPrIdx >= 0) {
-            std::string c = readProp(node.children[accPrIdx], "chr");
+        if (accPrIdx) {
+            std::string c = readProp(node.children[*accPrIdx], "chr").value_or("");
             if (!c.empty()) chr = c;
         }
 
         sink.startElement("mover");
-        if (eIdx >= 0) emitContainerChildren(node.children[eIdx], sink);
+        if (eIdx) emitContainerChildren(node.children[*eIdx], sink);
         else { sink.startElement("mrow"); sink.endElement(); }
         sink.startElement("mo");
         sink.characters(chr);
@@ -888,18 +917,18 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
 
     // ── m:bar → overline/underline ────────────────────────────────────────
     if (tag == "bar") {
-        int barPrIdx = findChildIdx(node, "barPr");
-        int eIdx = findChildIdx(node, "e");
+        auto barPrIdx = findChild(node, "barPr");
+        auto eIdx = findChild(node, "e");
 
         std::string pos = "top";
-        if (barPrIdx >= 0) {
-            std::string p = readProp(node.children[barPrIdx], "pos");
+        if (barPrIdx) {
+            std::string p = readProp(node.children[*barPrIdx], "pos").value_or("");
             if (!p.empty()) pos = p;
         }
 
         if (pos == "top" || pos == "topBot") {
             sink.startElement("mover");
-            if (eIdx >= 0) emitContainerChildren(node.children[eIdx], sink);
+            if (eIdx) emitContainerChildren(node.children[*eIdx], sink);
             else { sink.startElement("mrow"); sink.endElement(); }
             sink.startElement("mo");
             sink.characters("\u00AF");
@@ -908,8 +937,8 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
         }
         if (pos == "bot" || pos == "topBot") {
             sink.startElement("munder");
-            if (eIdx >= 0 && pos != "top") emitContainerChildren(node.children[eIdx], sink);
-            else if (eIdx >= 0) {} // already emitted in mover
+            if (eIdx && pos != "top") emitContainerChildren(node.children[*eIdx], sink);
+            else if (eIdx) {} // already emitted in mover
             else { sink.startElement("mrow"); sink.endElement(); }
             sink.startElement("mo");
             sink.characters("\u00AF");
@@ -921,35 +950,35 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
 
     // ── m:func → function application (e.g., sin x) ──────────────────────
     if (tag == "func") {
-        int fNameIdx = findChildIdx(node, "fName");
-        int eIdx = findChildIdx(node, "e");
+        auto fNameIdx = findChild(node, "fName");
+        auto eIdx = findChild(node, "e");
         sink.startElement("mrow");
-        if (fNameIdx >= 0) emitContainerChildren(node.children[fNameIdx], sink);
+        if (fNameIdx) emitContainerChildren(node.children[*fNameIdx], sink);
         sink.startElement("mo");
         sink.characters("\u2061");
         sink.endElement();
-        if (eIdx >= 0) emitContainerChildren(node.children[eIdx], sink);
+        if (eIdx) emitContainerChildren(node.children[*eIdx], sink);
         sink.endElement();
         return;
     }
 
     // ── m:groupChr → group character (under/over brace) ───────────────────
     if (tag == "groupChr") {
-        int grPrIdx = findChildIdx(node, "groupChrPr");
-        int eIdx = findChildIdx(node, "e");
+        auto grPrIdx = findChild(node, "groupChrPr");
+        auto eIdx = findChild(node, "e");
 
         std::string chr = "\u23DF";
         std::string pos = "bot";
-        if (grPrIdx >= 0) {
-            std::string c = readProp(node.children[grPrIdx], "chr");
+        if (grPrIdx) {
+            std::string c = readProp(node.children[*grPrIdx], "chr").value_or("");
             if (!c.empty()) chr = c;
-            std::string p = readProp(node.children[grPrIdx], "pos");
+            std::string p = readProp(node.children[*grPrIdx], "pos").value_or("");
             if (!p.empty()) pos = p;
         }
 
         if (pos == "top") {
             sink.startElement("mover");
-            if (eIdx >= 0) emitContainerChildren(node.children[eIdx], sink);
+            if (eIdx) emitContainerChildren(node.children[*eIdx], sink);
             else { sink.startElement("mrow"); sink.endElement(); }
             sink.startElement("mo");
             sink.characters(chr);
@@ -957,7 +986,7 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
             sink.endElement();
         } else {
             sink.startElement("munder");
-            if (eIdx >= 0) emitContainerChildren(node.children[eIdx], sink);
+            if (eIdx) emitContainerChildren(node.children[*eIdx], sink);
             else { sink.startElement("mrow"); sink.endElement(); }
             sink.startElement("mo");
             sink.characters(chr);
@@ -1001,13 +1030,13 @@ static void emitMathml(const MmlNode &node, XmlSink &sink) {
 
     // ── m:phant → mphantom (or mrow/mpadded based on properties) ─────────
     if (tag == "phant") {
-        int phantPrIdx = findChildIdx(node, "phantPr");
+        auto phantPrIdx = findChild(node, "phantPr");
         bool show = false, zeroWid = false;
-        if (phantPrIdx >= 0) {
-            const MmlNode &pr = node.children[phantPrIdx];
-            show = findChildIdx(pr, "show") >= 0;
+        if (phantPrIdx) {
+            const MmlNode &pr = node.children[*phantPrIdx];
+            show = findChild(pr, "show").has_value();
             // Even without the element, if zeroWid child exists, it's true
-            zeroWid = findChildIdx(pr, "zeroWid") >= 0;
+            zeroWid = findChild(pr, "zeroWid").has_value();
         }
 
         if (show) {
@@ -1061,7 +1090,7 @@ class StringSink : public XmlSink {
     bool pendingAttr_ = false;
     std::vector<std::string> stack_;
 
-    static std::string escXml(const std::string &s) {
+    static std::string escXml(std::string_view s) {
         std::string r;
         r.reserve(s.size());
         for (char c : s) {
@@ -1076,7 +1105,7 @@ class StringSink : public XmlSink {
     }
 
 public:
-    void startElement(const std::string &name) override {
+    void startElement(std::string_view name) override {
         if (pendingAttr_) {
             out_ += '>';
             pendingAttr_ = false;
@@ -1084,7 +1113,7 @@ public:
         out_ += '<';
         out_ += name;
         pendingAttr_ = true;
-        stack_.push_back(name);
+        stack_.emplace_back(name);
     }
 
     void endElement() override {
@@ -1101,7 +1130,7 @@ public:
         stack_.pop_back();
     }
 
-    void attribute(const std::string &name, const std::string &value) override {
+    void attribute(std::string_view name, std::string_view value) override {
         out_ += ' ';
         out_ += name;
         out_ += "=\"";
@@ -1109,7 +1138,7 @@ public:
         out_ += '"';
     }
 
-    void characters(const std::string &text) override {
+    void characters(std::string_view text) override {
         if (pendingAttr_) {
             out_ += '>';
             pendingAttr_ = false;
@@ -1122,7 +1151,7 @@ public:
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-bool MathmlToOmml::convert(const std::string &mathmlXml, XmlSink &sink)
+bool MathmlToOmml::convert(std::string_view mathmlXml, XmlSink &sink)
 {
     if (mathmlXml.empty()) return false;
 
@@ -1139,17 +1168,29 @@ bool MathmlToOmml::convert(const std::string &mathmlXml, XmlSink &sink)
     return true;
 }
 
-std::string MathmlToOmml::convert(const std::string &mathmlXml)
+std::expected<std::string, std::string> MathmlToOmml::convert(std::string_view mathmlXml)
 {
+    if (mathmlXml.empty())
+        return std::unexpected("empty input");
+
+    XmlReader reader(mathmlXml);
+    if (!reader.seekToFirstElement())
+        return std::unexpected("no root element found");
+
+    MmlNode root = reader.readElement();
+
     StringSink sink;
-    if (convert(mathmlXml, sink))
-        return sink.result();
-    return {};
+    sink.startElement("m:oMath");
+    sink.attribute("xmlns:m",
+        "http://schemas.openxmlformats.org/officeDocument/2006/math");
+    emitOmml(root, sink);
+    sink.endElement();
+    return sink.result();
 }
 
 // ── OMML → MathML public API ──────────────────────────────────────────────
 
-bool OmmlToMathml::convert(const std::string &ommlXml, XmlSink &sink)
+bool OmmlToMathml::convert(std::string_view ommlXml, XmlSink &sink)
 {
     if (ommlXml.empty()) return false;
 
@@ -1162,10 +1203,18 @@ bool OmmlToMathml::convert(const std::string &ommlXml, XmlSink &sink)
     return true;
 }
 
-std::string OmmlToMathml::convert(const std::string &ommlXml)
+std::expected<std::string, std::string> OmmlToMathml::convert(std::string_view ommlXml)
 {
+    if (ommlXml.empty())
+        return std::unexpected("empty input");
+
+    XmlReader reader(ommlXml);
+    if (!reader.seekToFirstElement())
+        return std::unexpected("no root element found");
+
+    MmlNode root = reader.readElement();
+
     StringSink sink;
-    if (convert(ommlXml, sink))
-        return sink.result();
-    return {};
+    emitMathml(root, sink);
+    return sink.result();
 }

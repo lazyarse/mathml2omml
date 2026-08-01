@@ -1,6 +1,6 @@
 # mathml2omml
 
-A zero-dependency C++17 library for converting between Mathematical Markup Language (MathML) and Office Mathematical Markup Language (OMML).
+A zero-dependency C++23 library for converting between Mathematical Markup Language (MathML) and Office Mathematical Markup Language (OMML).
 
 ## Build
 
@@ -25,6 +25,7 @@ cmake --build build
 
 ```cpp
 #include "mathml2omml.h"
+#include <expected>
 #include <iostream>
 
 int main() {
@@ -33,12 +34,15 @@ int main() {
         "<msup><mi>x</mi><mn>2</mn></msup>"
         "</math>";
 
-    std::string omml = MathmlToOmml::convert(mml);
-    std::cout << omml << std::endl;
-    // <m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
-    //   <m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e>
-    //   <m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup>
-    // </m:oMath>
+    if (auto omml = MathmlToOmml::convert(mml); omml) {
+        std::cout << *omml << std::endl;
+        // <m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">
+        //   <m:sSup><m:e><m:r><m:t>x</m:t></m:r></m:e>
+        //   <m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup>
+        // </m:oMath>
+    } else {
+        std::cerr << "conversion failed: " << omml.error() << std::endl;
+    }
 }
 ```
 
@@ -57,7 +61,7 @@ int main() {
         "</m:f>"
         "</m:oMath>";
 
-    std::string mml = OmmlToMathml::convert(omml);
+    std::string mml = OmmlToMathml::convert(omml).value();
     std::cout << mml << std::endl;
     // <math><mfrac><mi>a</mi><mi>b</mi></mfrac></math>
 }
@@ -78,11 +82,11 @@ struct PrettySink : XmlSink {
     std::string out_;
     bool openTag_ = false;
 
-    void startElement(const std::string &name) override {
+    void startElement(std::string_view name) override {
         closeOpenTag();
-        out_ += std::string(stack_.size() * 2, ' ') + '<' + name;
+        out_ += std::string(stack_.size() * 2, ' ') + '<' + std::string(name);
         openTag_ = true;
-        stack_.push_back(name);
+        stack_.emplace_back(name);
     }
 
     void endElement() override {
@@ -96,13 +100,13 @@ struct PrettySink : XmlSink {
         }
     }
 
-    void attribute(const std::string &name, const std::string &value) override {
-        out_ += ' ' + name + "=\"" + value + '"';
+    void attribute(std::string_view name, std::string_view value) override {
+        out_ += ' ' + std::string(name) + "=\"" + std::string(value) + '"';
     }
 
-    void characters(const std::string &text) override {
+    void characters(std::string_view text) override {
         closeOpenTag();
-        out_ += std::string(stack_.size() * 2, ' ') + text + '\n';
+        out_ += std::string(stack_.size() * 2, ' ') + std::string(text) + '\n';
     }
 
     std::string result() const { return out_; }
@@ -164,4 +168,4 @@ Font properties (`m:sty`, `m:scr`, `m:nor`) are mapped to the MathML `mathvarian
 
 ## Dependencies
 
-None. C++17 standard library only. Google Test (optional, for tests).
+None. C++23 standard library only. Google Test (optional, for tests).
